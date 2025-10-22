@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Private Chat (improved)</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1.5.2/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+</head>
+<body>
+    <h2>Private Chat (history, presence, notifications)</h2>
+
+    <div>
+        <input id="username" placeholder="username"/>
+        <input id="password" placeholder="password" type="password"/>
+        <button onclick="signup()">Signup</button>
+        <button onclick="login()">Login</button>
+    </div>
+
+    <div>
+        <strong>Logged in as:</strong> <span id="me">-</span>
+        <button onclick="refreshOnline()">Refresh Online</button>
+        <ul id="onlineList"></ul>
+    </div>
+
+    <div>
+        <input id="receiver" placeholder="send to (username)"/>
+        <input id="message" placeholder="message"/>
+        <button onclick="sendMessage()">Send</button>
+        <button onclick="loadHistory()">Load History</button>
+    </div>
+
+    <div>
+        <h3>Notifications</h3>
+        <ul id="notifications"></ul>
+    </div>
+
+    <div>
+        <h3>Chat</h3>
+        <ul id="chat"></ul>
+    </div>
+
+    <script>
+        let stompClient = null;
+        let jwt = null;
+        let me = null;
+
+        function signup() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            fetch('/auth/signup', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username, password})
+            }).then(r => r.text()).then(t => alert(t)).catch(e=>alert(e));
+        }
+
+        function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            fetch('/auth/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username, password})
+            }).then(r => r.text()).then(token => {
+                jwt = token;
+                me = username;
+                document.getElementById('me').innerText = me;
+                connectWebSocket();
+                refreshOnline();
+            }).catch(e => alert("Login failed: " + e));
+        }
+
+        function connectWebSocket() {
+            if(stompClient && stompClient.connected) return;
+            const socket = new SockJS('/ws-chat');
+            stompClient = Stomp.over(socket);
+
+            // Pass Authorization header in connect - server must read it (HandshakeInterceptor or Principal resolver)
+            const headers = {
+                Authorization: 'Bearer ' + jwt
+            };
+
+            stompClient.connect(headers, function(frame) {
+                console.log('Connected: ' + frame);
+
+                // subscribe to private queue for messages
+                stompClient.subscribe('/user/' + me + '/queue/messages', function(msg) {
+                    const message = JSON.parse(msg.body);
+                    const li = document.createElement('li');
+                    li.innerText = message.sender.username + ': ' + message.content;
+                    document.getElementById('chat').appendChild(li);
+                });
+
+                // subscribe to notifications topic
+                stompClient.subscribe('/topic/notifications/' + me, function(notif) {
+                    const n = JSON.parse(notif.body);
+                    const li = document.createElement('li');
+                    li.innerText = "From " + n.from + ": " + n.preview;
+                    document.getElementById('notifications').appendChild(li);
+                });
+            }, function(error) {
+                console.error('STOMP error', error);
+            });
+        }
+
+        function sendMessage() {
+            const receiver = document.getElementById('receiver').value;
+            const content = document.getElementById('message').value;
+            const payload = {
+                sender: { username: me },
+                receiver: { username: receiver },
+                content: content
+            };
+            stompClient.send("/app/chat", {}, JSON.stringify(payload));
+
+            // also append locally
+            const li = document.createElement('li');
+            li.innerText = "Me -> " + receiver + ": " + content;
+            document.getElementById('chat').appendChild(li);
+        }
+
+        function loadHistory() {
+            const receiver = document.getElementById('receiver').value;
+            fetch(`/messages/history?userA=${encodeURIComponent(me)}&userB=${encodeURIComponent(receiver)}`, {
+                headers: {
+                    'Authorization': 'Bearer ' + jwt
+                }
+            }).then(r => r.json()).then(arr => {
+                const chat = document.getElementById('chat');
+                chat.innerHTML = '';
+                arr.forEach(m => {
+                    const li = document.createElement('li');
+                    li.innerText = m.sender.username + ': ' + m.content;
+                    chat.appendChild(li);
+                });
+            }).catch(e => console.error(e));
+        }
+
+        function refreshOnline() {
+            fetch('/presence/online').then(r => r.json()).then(list => {
+                const ul = document.getElementById('onlineList');
+                ul.innerHTML = '';
+                list.forEach(u => {
+                    const li = document.createElement('li');
+                    li.innerText = u;
+                    ul.appendChild(li);
+                });
+            });
+        }
+    </script>
+</body>
+</html>
+
+
+
+Important frontend note: the STOMP CONNECT headers include Authorization: Bearer <token>. To translate that into a Principal on the server-side you should either:
+
+add a HandshakeInterceptor that reads the Authorization header from handshake and sets the Principal (recommended), or
+
+configure your WebSocket security such that HTTP session or SecurityContext is propagated to the WebSocket handshake.
+
+If you want, I will add a ready-made HandshakeInterceptor implementation that extracts the token, validates via JwtUtil, and attaches a Principal object — tell me and I'll include it.
+
+9) Minor improvements & production notes
+
+Persistence: H2 is fine for testing. For production use PostgreSQL/MySQL and proper migrations.
+
+Scaling: In-memory presence will not work with multiple app instances. Use Redis pub/sub or a shared online-user store for clustered presence.
+
+Security:
+
+The JwtUtil used earlier signs tokens with an in-memory secret. Use a strong secret or key pair in production and rotate periodically.
+
+For WebSocket, implementing a HandshakeInterceptor is strongly recommended so STOMP Principal is available (very important for convertAndSendToUser to map username->sessions correctly).
+
+Message model: Consider adding timestamps, status (delivered/read), and pagination for history retrieval.
+
+Unread counts: you can keep an unread counter in DB and send it with notifications.
+
+If you want, I will immediately provide one of the following next steps (pick one) and implement it right here:
+
+Add a HandshakeInterceptor that extracts the JWT during WebSocket handshake and sets the Principal (recommended).
+
+Add timestamps, read/delivered flags, and pagination for message history (REST page + size).
+
+Replace in-memory presence with Redis-backed presence for multi-instance support.
+
+Provide full zip / runnable project (all files + pom.xml) you can download.
+
+Tell me which one you want next (I can start with #1 by default if you want me to pick).
