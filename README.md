@@ -39,8 +39,7 @@ Push notifications for new messages when users are offline.
 🛠 Tech Stack
 
 Backend	Spring Boot, Spring Web
-Real-time Comm.	WebSocket, STOMP
-Security	Spring Security, JWT
-Database	MySQL / PostgreSQL / MongoDB
-Frontend (optional)	React / Angular / Vue or Thymeleaf
-Build Tool	Maven or Gradle
+Real-time Comm. -> WebSocket, STOMP
+Security ->	Spring Security, JWT
+Database -> MySQL
+Build Tool -> Maven
